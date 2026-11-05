@@ -18,11 +18,11 @@
   },
   "dependencies": {
     "@cmfcmf/docusaurus-search-local": "^2.0.1",
-    "@docusaurus/core": "3.9.2",
-    "@docusaurus/preset-classic": "3.9.2",
-    "@docusaurus/theme-common": "3.9.2",
-    "@docusaurus/plugin-content-docs": "3.9.2",
-    "@docusaurus/theme-mermaid": "3.9.2",
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/plugin-content-docs": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "@docusaurus/theme-common": "3.10.2",
+    "@docusaurus/theme-mermaid": "3.10.2",
     "@mdx-js/react": "^3.1.1",
     "clsx": "^1.1.1",
     "prism-react-renderer": "^2.4.1",
@@ -31,12 +31,12 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.8",
-    "@docusaurus/module-type-aliases": "3.9.2",
-    "@docusaurus/types": "3.9.2",
-    "@tsconfig/docusaurus": "2.0.7",
+    "@biomejs/biome": "^2.6.4",
+    "@docusaurus/module-type-aliases": "3.10.2",
+    "@docusaurus/types": "3.10.2",
+    "@tsconfig/docusaurus": "^2.0.9",
     "@types/node": "^22",
-    "@types/react": "^18.3.27",
+    "@types/react": "^18.3.31",
     "typescript": "~5.9.3",
     "vite-node": "^5.2.0"
   },
@@ -52,5 +52,5 @@
       "last 1 safari version"
     ]
   },
-  "packageManager": "pnpm@10.24.0+sha512.01ff8ae71b4419903b65c60fb2dc9d34cf8bb6e06d03bde112ef38f7a34d6904c424ba66bea5cdcf12890230bf39f9580473140ed9c946fef328b6e5238a345a"
+  "packageManager": "pnpm@12.16.1+sha512.091d1dee7927575661b25dab3c2ae31cafc1c54d6b71ed6a6600cf0c1cb10434a447eae14015f1b23e2e6bedeed79df94a932e2164d2832280dce3fb32f656d1"
 }
