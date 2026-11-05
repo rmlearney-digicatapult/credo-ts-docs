@@ -24,7 +24,7 @@
     "@docusaurus/theme-common": "3.10.2",
     "@docusaurus/theme-mermaid": "3.10.2",
     "@mdx-js/react": "^3.1.1",
-    "clsx": "^1.1.1",
+    "clsx": "^2.1.1",
     "prism-react-renderer": "^2.4.1",
     "raw-loader": "^4.0.2",
     "react": "^18.3.1",
@@ -38,7 +38,7 @@
     "@types/node": "^22",
     "@types/react": "^18.3.31",
     "typescript": "~5.9.3",
-    "vite-node": "^5.2.0"
+    "vite-node": "^6.0.0"
   },
   "browserslist": {
     "production": [
