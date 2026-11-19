@@ -1,18 +1,27 @@
 ---
-title: did:webvh witnessing
-description: Require witness approvals for changes to a did:webvh, approve changes as a witness agent, and collect and publish the approvals with @credo-ts/webvh.
+title: WebVH witnessing
+description: Require witness approvals for changes to a did:webvh, approve changes as a witness agent, and collect, check and publish the approvals with @credo-ts/webvh.
 ---
 
-A [did:webvh](./webvh.mdx) can require that witnesses approve every change before it's valid. A witness is another party, identified by a `did:key`, that checks each new log entry and signs an approval. Resolvers reject a published log entry that doesn't have enough approvals.
+A [did:webvh](./webvh.mdx) can require that witnesses approve every change before it's published. A witness is another party, identified by a `did:key`, that checks each new log entry and signs an approval. Resolvers reject a log entry that doesn't have enough approvals.
 
 Two agents take part, and both register `WebVhModule` as described in [Configure](./webvh.mdx#configure):
 
 | Agent | Does |
 | --- | --- |
-| Controller | Creates and changes the DID, collects the approvals, and publishes the log with its approvals. |
-| Witness | Holds a witness key, and approves the log entries that controllers send it. |
+| Controller | Creates and changes the DID, sends each new log entry to the witnesses, collects their approvals, and publishes the log with them. |
+| Witness | Holds a witness key, keeps its own copies of the published log and approvals of each DID it witnesses, and approves new log entries. |
 
-Credo signs and checks approvals, but doesn't contact anyone. Your applications send the log from the controller to the witnesses and the approvals back, for example over DIDComm or HTTPS, and the witness application decides which changes it approves.
+Credo signs and checks approvals, but doesn't contact anyone, and stores nothing for the witness. Your applications send the log to the witnesses and the approvals back, for example over DIDComm or HTTPS, and the witness application decides which changes it approves.
+
+Each change goes through these steps:
+
+1. The controller creates, updates or deactivates the DID. Credo stores the new log entry, and the call returns `finished`.
+2. The controller finds the witnesses that must approve the new entry, and sends them the log.
+3. Each witness checks the log against its copy of the published log, and signs an approval of the new entry.
+4. The controller collects approvals until there are enough, and stores them.
+5. The controller publishes the approvals, then the log.
+6. Each witness updates its copies of the published log and approvals.
 
 ## Set up a witness
 
@@ -21,24 +30,41 @@ The witness creates an Ed25519 key in its [key management service](../agent-setu
 ```ts showLineNumbers title="witness.ts" webvh-witness.ts section-1
 ```
 
-The witness agent doesn't need a `DidRecord` for the DIDs it witnesses.
+The witness agent doesn't need a `DidRecord` for the DIDs it witnesses. Keep the key ID, and your copies of the published log and approvals of each DID, in your witness application.
 
 ## Require witnesses
 
-The controller lists the witnesses, and how many of them must approve a change, in the `witness` option. Then it sends the new log, and the approvals it has so far, to each witness:
+The controller lists the witnesses, and how many of them must approve a change, in the `witness` option:
 
 ```ts showLineNumbers title="controller.ts" webvh-witness.ts section-2
 ```
 
-`threshold` is the number of witnesses that must approve each new log entry. Pass `witness` in the options of an update to change the witnesses or the threshold.
+`threshold` is the number of witnesses that must approve each new log entry. To change the witnesses or the threshold, pass `witness` in the options of an update. To stop witnessing, pass `witness: {}`.
 
-A `finished` create or update stores the new log entry, but it's not valid until enough witnesses approve it. Don't publish it before then.
+`create`, `update` and `deactivate` return `finished` once the new log entry is stored in your agent, whether or not it has its approvals. Don't publish it until it does. Your agent already resolves and signs with the new version, as described in [Resolve](./webvh.mdx#resolve).
+
+## Ask for approvals
+
+The controller finds the witnesses that must approve the new log entry, and sends them the log:
+
+```ts showLineNumbers title="controller.ts" webvh-witness.ts section-3
+```
+
+`getWitnessRequirement` returns the witnesses that may approve the latest entry of the stored log, and how many of them must. It applies the rules of the [did:webvh specification](https://identity.foundation/didwebvh/v1.0/#witness-lists):
+
+| The change | Is approved by |
+| --- | --- |
+| Creates the DID with witnesses, or sets witnesses for the first time | The new witnesses |
+| Keeps the witnesses | The current witnesses |
+| Replaces the witnesses, or stops witnessing | The previous witnesses |
+
+When it returns `undefined`, the new entry needs no approvals: publish it as described in [Publish the DID](./webvh.mdx#publish-the-did). For the requirements of every entry of a log, call `getWitnessRequirements(log)`.
 
 ## Approve a change
 
-The witness signs the new log entry with its key:
+The witness checks the log against its copy of the published log, and signs the new entry with its key:
 
-```ts showLineNumbers title="witness.ts" webvh-witness.ts section-3
+```ts showLineNumbers title="witness.ts" webvh-witness.ts section-4
 ```
 
 `signWitnessProof` checks that:
@@ -49,21 +75,56 @@ The witness signs the new log entry with its key:
 
 It then signs with the KMS key and returns the approval, which has the `versionId` of the new entry and the signature. Credo doesn't store or fetch anything. When a check fails, `signWitnessProof` throws a `CredoError`, with the reason as its `cause`.
 
-Keep `trustedLog` in your witness application, for example the log you approved last, or the published log. If you take it from the controller's request, the check that the log extends what you approved before means nothing.
+`trustedLog` and `witnessProofs` must be your own copies of the published log and approvals. If you take them from the controller's request, the check that the new entry follows the published log means nothing.
 
-Credo checks that the change is valid, not that you should approve it. Inspect the new entry, `candidateLog.at(-1)`, against your own policy before you call `signWitnessProof`.
+Credo checks that the change is valid, not that you should approve it. Before you call `signWitnessProof`, check the new entry, the tip of the log the controller sent, against your own policy. Keep the `versionId` of each entry you approve, so you don't approve two different entries for the same version of a DID.
 
-## Collect and publish approvals
+## Collect the approvals
 
-The controller adds the approvals to the ones it has, checks them, and stores them:
+The controller adds each approval to the approvals it has, checks them, and stores them:
 
-```ts showLineNumbers title="controller.ts" webvh-witness.ts section-4
+```ts showLineNumbers title="controller.ts" webvh-witness.ts section-5
 ```
 
-`verifyWitnessProofs` returns `verified`, and per log entry the number of approvals and whether there are enough. `rejectedProofs` lists approvals that don't count, with the reason. `storeWitnessProofs` replaces all stored approvals, so keep the approvals of earlier entries.
+`verifyWitnessProofs` returns `verified`, and in `requirements`, per log entry, the number of approvals and whether there are enough. `rejectedProofs` lists approvals that don't count, with the reason. Missing approvals aren't an error: `verified` stays `false` until there are enough. It throws a `CredoError` only when the log itself isn't valid.
 
-Then publish `did.jsonl` and `did-witness.json` together, as described in [Publish the DID](./webvh.mdx#publish-the-did).
+`storeWitnessProofs` replaces all stored approvals. Credo doesn't check what you store, so verify first. `getPublicationData` returns the stored approvals, and the next `update`, `deactivate` or `migrate` checks the earlier entries against them. You can pass `witnessProofs` in the options of that change instead, and Credo then stores those. With neither, Credo fetches the published `did-witness.json`.
 
-Every later update and the deactivation go through the same steps. The witness passes the log it approved last as `trustedLog`. Store the approvals before you change the DID again: Credo checks the earlier entries with the stored approvals, or with the published `did-witness.json` if none are stored.
+Each earlier entry that needed approvals must still have enough of them. A witness's approval of a published entry also counts for the entries before it, so the specification recommends keeping only each witness's latest approval of a published entry, and the approvals of the new entry. Keeping older approvals too, as the example does, is also valid.
+
+{/* TODO: merge and prune approvals with mergeWitnessProofs and pruneWitnessProofs once didwebvh-ts provides them and Credo wraps them */}
+
+## Publish the change
+
+Credo doesn't publish anything: `getPublicationData` returns the files, and your application copies them to its web server. Once the approvals are stored, publish `did-witness.json`, then `did.jsonl`, and `did.json` if the DID has a [parallel did:web](./webvh.mdx#parallel-did):
+
+```ts showLineNumbers title="controller.ts" webvh-witness.ts section-6
+```
+
+Publish the approvals first, because resolvers reject a log entry whose approvals they can't find.
+
+:::warning
+
+Don't publish after every change, or serve `getPublicationData` directly. It returns a new log entry as soon as it's stored, before the witnesses approve it.
+
+:::
+
+Each witness then updates its copies of the published log and approvals. It resolves the DID, which fetches and verifies the published files, and checks that the DID is at the version it approved. The log it approved is then its copy of the published log, and `fetchWitnessProofs` returns the published approvals:
+
+```ts showLineNumbers title="witness.ts" webvh-witness.ts section-7
+```
+
+## Later changes
+
+Every later update, and the deactivation, go through the same steps. Publish each change before you make the next one: witnesses only approve an entry that directly follows the published log.
+
+- After you stop witnessing with `witness: {}`, later changes need no approvals. Keep publishing `did-witness.json`, because resolvers still check the approvals of the earlier entries.
+- To deactivate a DID that uses pre-rotation, first update it with `nextKeyHashes: []`, and publish that change with its approvals. Then deactivate it, which needs approvals too.
+
+:::warning
+
+If the witnesses don't approve a change, you can't change the DID again, because every later change needs approvals for that entry. Your agent also keeps resolving and signing with the unapproved version. Create a new DID instead.
+
+:::
 
 To read the published approvals of a DID without storing them, call `agent.modules.webvh.fetchWitnessProofs(did)`.

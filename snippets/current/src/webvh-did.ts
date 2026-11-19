@@ -1,12 +1,13 @@
+import { mkdtemp, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { exampleStorage } from './example-storage.js'
 
 const storage = await exampleStorage()
 
 // start-section-1
-import { Agent, DidDocument, DidDocumentService, Kms } from '@credo-ts/core'
+import { Agent, DidDocumentBuilder, DidDocumentService, getMultikey, Kms } from '@credo-ts/core'
 import { agentDependencies } from '@credo-ts/node'
 import { type WebVhDidCreateOptions, type WebVhDidUpdateOptions, WebVhModule } from '@credo-ts/webvh'
-import express from 'express'
 
 const webVhModules = {
   webvh: new WebVhModule(),
@@ -24,29 +25,28 @@ await agent.initialize()
 
 // start-section-2
 // The update key signs the DID log. The assertion key signs credentials and AnonCreds objects.
-const updateKey = await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } })
-const assertionKey = await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } })
-const updateMultikey = Kms.PublicJwk.fromPublicJwk(updateKey.publicJwk).fingerprint
-const assertionMultikey = Kms.PublicJwk.fromPublicJwk(assertionKey.publicJwk).fingerprint
+const updateKey = Kms.PublicJwk.fromKmsKey(await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } }))
+const assertionKey = Kms.PublicJwk.fromKmsKey(await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } }))
+
+// Credo replaces {DID} with the new DID
+const didDocument = new DidDocumentBuilder('{DID}')
+  .addContext('https://w3id.org/security/multikey/v1')
+  .addVerificationMethod(
+    getMultikey({ did: '{DID}', publicJwk: assertionKey, verificationMethodId: '{DID}#assertion-key' })
+  )
+  .addAuthentication('{DID}#assertion-key')
+  .addAssertionMethod('{DID}#assertion-key')
+  .build()
 
 const { didState } = await agent.dids.create<WebVhDidCreateOptions>({
   method: 'webvh',
-  // Credo replaces {DID} with the new DID
-  didDocument: DidDocument.fromJSON({
-    '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
-    id: '{DID}',
-    verificationMethod: [
-      { id: '{DID}#assertion-key', type: 'Multikey', controller: '{DID}', publicKeyMultibase: assertionMultikey },
-    ],
-    authentication: ['{DID}#assertion-key'],
-    assertionMethod: ['{DID}#assertion-key'],
-  }),
+  didDocument,
   options: {
     address: 'issuer.example.com',
-    updateKeys: [updateMultikey],
-    updateKeyKmsKeyIds: { [updateMultikey]: { keyId: updateKey.keyId, kmsBackend: updateKey.backend } },
+    updateKeys: [updateKey.fingerprint],
+    updateKeyKmsKeyIds: { [updateKey.fingerprint]: { keyId: updateKey.keyId, kmsBackend: updateKey.kmsBackend } },
     keys: [
-      { didDocumentRelativeKeyId: '#assertion-key', kmsKeyId: assertionKey.keyId, kmsBackend: assertionKey.backend },
+      { didDocumentRelativeKeyId: '#assertion-key', kmsKeyId: assertionKey.keyId, kmsBackend: assertionKey.kmsBackend },
     ],
     alsoKnownAsWeb: true,
   },
@@ -58,31 +58,26 @@ if (didState.state !== 'finished') {
 const did = didState.did
 // end-section-2
 
+const wellKnownDirectory = await mkdtemp(`${tmpdir()}/webvh-`)
+
 // start-section-3
-const app = express()
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 
-app.get('/.well-known/did.jsonl', async (_request, response) => {
-  const { log } = await agent.modules.webvh.getPublicationData(did)
+// Copies the files to the directory that your web server serves as https://issuer.example.com/.well-known/
+async function publishDid(did: string, directory: string) {
+  const { log, witnessProofs, webDoc } = await agent.modules.webvh.getPublicationData(did)
+  await mkdir(directory, { recursive: true })
+  // The approvals before the log, so resolvers don't find a log entry without its approvals
+  await writeFile(path.join(directory, 'did-witness.json'), JSON.stringify(witnessProofs))
   // One log entry per line
-  response.type('text/jsonl').send(log.map((entry) => JSON.stringify(entry)).join('\n'))
-})
+  await writeFile(path.join(directory, 'did.jsonl'), log.map((entry) => JSON.stringify(entry)).join('\n'))
+  if (webDoc) await writeFile(path.join(directory, 'did.json'), JSON.stringify(webDoc))
+  else await rm(path.join(directory, 'did.json'), { force: true })
+}
 
-app.get('/.well-known/did-witness.json', async (_request, response) => {
-  const { witnessProofs } = await agent.modules.webvh.getPublicationData(did)
-  response.json(witnessProofs)
-})
-
-app.get('/.well-known/did.json', async (_request, response) => {
-  const { webDoc } = await agent.modules.webvh.getPublicationData(did)
-  if (!webDoc) {
-    response.sendStatus(404)
-    return
-  }
-  response.json(webDoc)
-})
+await publishDid(did, wellKnownDirectory)
 // end-section-3
-
-const server = app.listen(4085)
 
 // start-section-4
 // Your own DID resolves from its DidRecord, whether it's published or not
@@ -102,8 +97,8 @@ const firstVersion = await agent.dids.resolve(`${did}?versionNumber=1`)
 console.log(local.didDocument?.id, published.didResolutionMetadata.error, firstVersion.didResolutionMetadata.error)
 
 // start-section-5
-const didDocument = await agent.dids.resolveDidDocument(did)
-didDocument.service = [
+const updatedDidDocument = await agent.dids.resolveDidDocument(did)
+updatedDidDocument.service = [
   new DidDocumentService({
     id: `${did}#website`,
     type: 'LinkedDomains',
@@ -111,20 +106,21 @@ didDocument.service = [
   }),
 ]
 
-const updateResult = await agent.dids.update<WebVhDidUpdateOptions>({ did, didDocument })
+const updateResult = await agent.dids.update<WebVhDidUpdateOptions>({ did, didDocument: updatedDidDocument })
 if (updateResult.didState.state !== 'finished') throw new Error('Updating the did failed')
 // end-section-5
 
 // start-section-6
-const nextUpdateKey = await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } })
-const nextUpdateMultikey = Kms.PublicJwk.fromPublicJwk(nextUpdateKey.publicJwk).fingerprint
+const nextUpdateKey = Kms.PublicJwk.fromKmsKey(await agent.kms.createKey({ type: { kty: 'OKP', crv: 'Ed25519' } }))
 
 const rotateResult = await agent.dids.update<WebVhDidUpdateOptions>({
   did,
   didDocument: await agent.dids.resolveDidDocument(did),
   options: {
-    updateKeys: [nextUpdateMultikey],
-    updateKeyKmsKeyIds: { [nextUpdateMultikey]: { keyId: nextUpdateKey.keyId, kmsBackend: nextUpdateKey.backend } },
+    updateKeys: [nextUpdateKey.fingerprint],
+    updateKeyKmsKeyIds: {
+      [nextUpdateKey.fingerprint]: { keyId: nextUpdateKey.keyId, kmsBackend: nextUpdateKey.kmsBackend },
+    },
   },
 })
 if (rotateResult.didState.state !== 'finished') throw new Error('Rotating the update key failed')
@@ -135,9 +131,8 @@ const deactivateResult = await agent.dids.deactivate({ did })
 if (deactivateResult.didState.state !== 'finished') throw new Error('Deactivating the did failed')
 // end-section-7
 
-const publishedLog = await fetch('http://localhost:4085/.well-known/did.jsonl').then((response) => response.text())
-const publishedWebDoc = await fetch('http://localhost:4085/.well-known/did.json')
-console.log(did, publishedLog.split('\n').length, publishedWebDoc.status)
+// Publish again after every change. After deactivation, there's no did.json.
+await publishDid(did, wellKnownDirectory)
+console.log(did, await readdir(wellKnownDirectory))
 
-server.close()
 await agent.shutdown()
