@@ -249,6 +249,45 @@ const service = new URLSearchParams(parsed.query).get('service')
 - `DidJwk.fromDid` rejects DID URL fragments other than `#0`.
 - The JWK `use` value decides the verification relationships: with `use: 'sig'` the key isn't used for key agreement, and with `use: 'enc'` it's only used for key agreement.
 
+### did:webvh
+
+`@credo-ts/webvh` now needs Node.js 22.12 or later. See [did:webvh](../../dids-and-trust/webvh.mdx) and [did:webvh witnessing](../../dids-and-trust/webvh-witnessing.mdx) for the full API.
+
+`WebVhModule` adds the did:webvh registrar and resolver to `DidsModule`, so you don't need to list them anymore.
+
+Credo no longer creates a key for a new did:webvh. Create the keys in the KMS, write the complete DID document, and map the keys in the options. `domain` and `path` are replaced by `options.address` and `options.paths`:
+
+```ts
+// 0.7
+await agent.dids.create<WebVhDidCreateOptions>({
+  method: 'webvh',
+  domain: 'issuer.example.com',
+  path: 'issuers/acme',
+})
+
+// 0.8
+await agent.dids.create<WebVhDidCreateOptions>({
+  method: 'webvh',
+  didDocument, // with {DID} where the DID goes
+  options: {
+    address: 'issuer.example.com',
+    paths: ['issuers', 'acme'],
+    updateKeys: [updateMultikey],
+    updateKeyKmsKeyIds: { [updateMultikey]: { keyId: updateKey.keyId, kmsBackend: updateKey.backend } },
+    keys: [{ didDocumentRelativeKeyId: '#assertion-key', kmsKeyId: assertionKey.keyId, kmsBackend: assertionKey.backend }],
+  },
+})
+```
+
+- `update` stores the document you pass as it is. It no longer keeps `assertionMethod` from the previous version when you leave it out.
+- `agent.dids.deactivate` deactivates a did:webvh.
+- `WebVhDidRecordMetadataKeys` is removed. Read the log with `agent.modules.webvh.getPublicationData(did)` instead of from the metadata of the `DidRecord`.
+- The attested resource classes are replaced by types and the `zWebVhAttestedResource` schema, which are only exported from `@credo-ts/webvh/resources`. `parseResourceId`, `getResourceType`, `requireResourceType`, `WebVhResourcePublisher` and `WebVhResourceResolver` are removed.
+- A DID URL with a query, such as `?versionId=`, resolves that version from the published log. A deactivated DID resolves to `didDocument: null` with `didDocumentMetadata.deactivated: true`.
+- did:webvh DIDs whose log uses version 0.5 of the method, or that are hosted on a name without a dot, such as `localhost`, don't resolve anymore. Create them again.
+
+{/* TODO: describe how to update a did:webvh created with Credo 0.7 */}
+
 ### `JsonWebKey2020` without `kid`
 
 `JsonWebKey2020` verification methods in new DID documents no longer include a `kid` in `publicKeyJwk`. Before, Credo put the key management key ID there, so it ended up in published DID documents. Credo finds the key through the keys on the `DidRecord`, so you don't need to change anything.

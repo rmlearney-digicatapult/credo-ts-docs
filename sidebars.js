@@ -157,6 +157,7 @@ const sidebars = {
         'dids-and-trust/indy-vdr',
         'dids-and-trust/hedera',
         'dids-and-trust/webvh',
+        'dids-and-trust/webvh-witnessing',
       ],
     },
     'supported-standards',

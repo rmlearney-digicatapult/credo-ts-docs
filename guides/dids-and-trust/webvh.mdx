@@ -1,9 +1,9 @@
 ---
 title: did:webvh
-description: Create, update and resolve did:webvh DIDs with @credo-ts/webvh, host the DID log, and use did:webvh as an AnonCreds registry.
+description: Create, update, deactivate and resolve did:webvh DIDs with @credo-ts/webvh, publish the DID log and a parallel did:web, and use did:webvh as an AnonCreds registry.
 ---
 
-[did:webvh](https://identity.foundation/didwebvh/) is hosted on your own web server, like `did:web`, but every version of the DID document is recorded in a signed log. Resolvers verify the whole log, so they can check the history of the DID and who changed it. `@credo-ts/webvh` creates and updates `did:webvh` DIDs and their log, resolves them, and provides an AnonCreds registry. You host the log yourself.
+[did:webvh](https://identity.foundation/didwebvh/) is hosted on your own web server, like `did:web`, but every version of the DID document is recorded in a signed log. Resolvers verify the whole log, so they can check the history of the DID and who changed it. `@credo-ts/webvh` creates, updates and deactivates `did:webvh` DIDs, stores their log, resolves them, and provides an AnonCreds registry. Credo stores everything in your agent: you publish the files on your web server, and, if the DID uses witnesses, you collect their approvals as described in [did:webvh witnessing](./webvh-witnessing.mdx).
 
 Use `did:webvh` instead of `did:web` when verifiers should be able to check how your DID document changed over time, or when you want to publish AnonCreds objects without a ledger.
 
@@ -11,46 +11,111 @@ Use `did:webvh` instead of `did:web` when verifiers should be able to check how 
 
 <InstallTabs packages="@credo-ts/webvh" />
 
+`@credo-ts/webvh` needs Node.js 22.12 or later.
+
 ## Configure
 
-Register `WebVhModule` and add the `did:webvh` registrar and resolver to `DidsModule`:
+Register `WebVhModule`:
 
 ```ts showLineNumbers title="agent.ts" webvh-did.ts section-1
 ```
 
-Spread these modules into the `modules` of your agent. `WebVhModule` has no options, and doesn't register the registrar and resolver with `DidsModule`. Your lists replace the default registrars and resolvers, see [Configure DID methods](./index.mdx#configure-did-methods).
+Spread these modules into the `modules` of your agent. `WebVhModule` adds the `did:webvh` registrar and resolver to `DidsModule`, unless you configured your own there. Its API is available under the key you register it with, here `agent.modules.webvh`.
 
 ## Create a did:webvh
+
+Create the keys in the [key management service](../agent-setup/key-management.mdx), write the complete DID document, and pass both to `create`:
 
 ```ts showLineNumbers title="issuer.ts" webvh-did.ts section-2
 ```
 
-`domain`, and the optional `path`, go at the top level of the options. Credo creates an Ed25519 key that signs the log, and adds it to the DID document as a `Multikey` verification method for `authentication` and `assertionMethod`. The result is a DID such as `did:webvh:<scid>:issuer.example.com`, where the self-certifying identifier (SCID) is derived from the first log entry. With `path: 'issuers/acme'`, the DID ends in `issuer.example.com:issuers:acme`.
+Credo doesn't add keys or verification methods to your document. Write `{DID}` wherever the DID goes, and Credo replaces it once the DID is known. The options are:
 
-Credo stores the DID and its log in a `DidRecord`, and publishes nothing. An agent can have one `did:webvh` per domain and path.
+- `address`: the host of the DID, with a port if needed, such as `issuer.example.com:8443`. Add `paths: ['issuers', 'acme']` to publish it under a path. The DID is then `did:webvh:<scid>:issuer.example.com:issuers:acme`, where the self-certifying identifier (SCID) is derived from the first log entry.
+- `updateKeys`: the Ed25519 keys, as multikeys, that may sign changes to the DID. `updateKeyKmsKeyIds` maps each one to its key in the KMS. Update keys don't need to be in the DID document.
+- `keys`: maps the verification methods of the document, by their relative ID such as `#assertion-key`, to keys in the KMS, so the agent can sign with them.
+- `alsoKnownAsWeb`: also creates a [parallel did:web](#parallel-did).
+- `portable`: allows you to [move the DID](#move-a-did) to another location later.
+- `witness`: requires [witness approvals](./webvh-witnessing.mdx) for every change.
 
-## Host the DID log
+Credo checks every key mapping against the KMS. It stores the DID, its document and its log in a `DidRecord`, and publishes nothing: a `finished` result means the DID is stored in your agent. Credo doesn't stop you from creating more than one `did:webvh` at the same location, but you can only publish one log there.
 
-Serve the log as JSON Lines, one entry per line, at:
+## Publish the DID
 
-- `https://<domain>/.well-known/did.jsonl` for a DID without a path.
-- `https://<domain>/<path>/did.jsonl` for a DID with a path.
+Serve these files at `https://<host>/.well-known/` for a DID without a path, or at `https://<host>/<path>/` for a DID with a path:
 
-The log is in the metadata of the `DidRecord`. This Express route reads it on every request, so it always serves the latest version:
+| File | Content |
+| --- | --- |
+| `did.jsonl` | The DID log, one entry per line. |
+| `did-witness.json` | The witness approvals, for a DID that uses [witnesses](./webvh-witnessing.mdx). |
+| `did.json` | The [parallel did:web](#parallel-did) document, if the DID has one. |
+
+`getPublicationData` returns all three from the `DidRecord`. These Express routes read it on every request, so they always serve the latest version:
 
 ```ts showLineNumbers title="server.ts" webvh-did.ts section-3
 ```
 
-Resolvers fetch the log over HTTPS, verify every entry, and return the latest DID document. For a DID that your agent created, `agent.dids.resolve` returns the document from the `DidRecord`.
+Publish again after every update and deactivation. For a DID with witnesses, publish a new log only together with its approvals.
 
-## Update a did:webvh
-
-Resolve the document, change it, and pass the full new document to `update`:
+## Resolve
 
 ```ts showLineNumbers title="issuer.ts" webvh-did.ts section-4
 ```
 
-Credo signs a new log entry with the update key and stores the new log. If you leave out `assertionMethod`, Credo keeps the one from the previous version. Deactivating a `did:webvh` isn't supported.
+- For a DID your agent created, `resolve` returns the document from the `DidRecord`, so you can sign with a new or updated DID before you publish it. That document isn't evidence that the DID is published.
+- To check what's published, such as after publishing an update or a deactivation, skip the cache and the `DidRecord` with the options above. Credo then fetches the log, and the witness approvals, and verifies them.
+- A DID URL with a query, such as `?versionNumber=1`, `?versionId=` or `?versionTime=`, always resolves the published log and selects that version.
+- Like other DID methods, the documents of DIDs that your agent didn't create are [cached](../agent-setup/caching.mdx) for 5 minutes.
+
+A deactivated DID resolves to `didDocument: null` with `didDocumentMetadata.deactivated: true`, so check both `didResolutionMetadata.error` and `deactivated`. Credo fetches with the agent's `fetch` and its `fetchLimits`.
+
+## Update a did:webvh
+
+Pass the complete new DID document to `update`:
+
+```ts showLineNumbers title="issuer.ts" webvh-did.ts section-5
+```
+
+Credo signs a new log entry with an update key the agent holds, and stores the new log. It doesn't merge the new document with the previous one, so include everything the DID should keep. Credo keeps the KMS mapping of each verification method whose key didn't change. Pass `options.keys` to map new keys.
+
+### Rotate the update key
+
+Pass the new update keys and their KMS keys in the options:
+
+```ts showLineNumbers title="issuer.ts" webvh-did.ts section-6
+```
+
+The current update key signs this change. From the next change on, only the new keys can sign.
+
+### Move a DID
+
+A DID created with `portable: true` can move to another location. Pass the new `address`, and `paths` if needed, in the options of `update`. The DID keeps its SCID, and its history, and Credo stores it under the new DID. Publish the log at the new location.
+
+`agent.modules.webvh.migrate` converts a portable DID whose host contains non-ASCII characters to the ASCII form of the host.
+
+## Deactivate a did:webvh
+
+```ts showLineNumbers title="issuer.ts" webvh-did.ts section-7
+```
+
+Credo signs a last log entry that marks the DID as deactivated. After that, nobody can change the DID. Publish the new log, and delete the `did.json` of a [parallel did:web](#parallel-did). If the DID uses pre-rotation, first update it with `nextKeyHashes: []` in the options.
+
+:::caution
+
+After deactivation, `agent.dids.resolve` still returns the last document from the `DidRecord`, and the agent can still sign with its keys. Resolve the published log to see `deactivated: true`.
+
+:::
+
+## Parallel did:web
+
+With `alsoKnownAsWeb: true`, the document lists a `did:web` for the same location in `alsoKnownAs`, such as `did:web:issuer.example.com`. Verifiers that only support `did:web` can resolve that DID, but they don't get the history of the `did:webvh`. Credo:
+
+- Returns the `did:web` document as `webDoc` from `getPublicationData`, after every change. Publish it as `did.json`.
+- Imports the `did:web` as a DID of your agent, with the KMS keys of the `did:webvh`, so you can resolve it locally and sign as the `did:web` too.
+
+As long as the document keeps the `did:web` in `alsoKnownAs`, updates keep the `did:web` in sync. Moving the DID imports the `did:web` of the new location. Without the `did:web` in `alsoKnownAs`, or after deactivation, there is no `webDoc`, so delete the published `did.json`.
+
+Only one `did:webvh` at a location can have the parallel `did:web`, because there is one `did.json`. Creating or updating a second one fails, and nothing is stored. A `did:web` that you imported yourself is replaced, and Credo logs a warning. Credo doesn't delete a `did:web` that it no longer needs yet: it logs a warning, and you can delete the `DidRecord` yourself.
 
 ## DID-linked resources
 
@@ -60,7 +125,7 @@ A `did:webvh` can link resources, such as AnonCreds objects, at `<did>/resources
 const result = await agent.modules.webvh.resolveResource(`${did}/resources/${resourceId}`)
 ```
 
-Credo fetches the resource from `https://<domain>/resources/<resourceId>` (or under the path of the DID). The result has `content`, or `error` and `message` when the resource can't be resolved.
+Credo fetches the resource from `https://<host>/resources/<resourceId>` (or under the path of the DID). The result has `content`, or `error` and `message` when the resource can't be resolved.
 
 ## AnonCreds registry
 
@@ -69,4 +134,4 @@ Credo fetches the resource from `https://<domain>/resources/<resourceId>` (or un
 ```ts showLineNumbers title="agent.ts" webvh-anoncreds.ts section-1
 ```
 
-Registering a schema, credential definition, revocation registry definition or status list publishes nothing. The result has the object id, `<did>/resources/<resourceId>`, and in `registrationMetadata.attestedResource` a resource signed with the DID's `assertionMethod` key. Store it, and serve it as JSON at `https://<domain>/resources/<resourceId>`, so others can resolve the object.
+Registering a schema, credential definition, revocation registry definition or status list publishes nothing. The result has the object id, `<did>/resources/<resourceId>`, and in `registrationMetadata.attestedResource` a resource signed with an Ed25519 `assertionMethod` key of the DID that you mapped in `keys`. Store it, and serve it as JSON at `https://<host>/resources/<resourceId>`, so others can resolve the object.
