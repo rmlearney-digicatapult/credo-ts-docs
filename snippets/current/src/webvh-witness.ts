@@ -10,7 +10,7 @@ import {
   type WebVhDidLog,
   type WebVhDidUpdateOptions,
   WebVhModule,
-  type WebVhWitnessSigningOptions,
+  type WebVhWitnessProofFile,
 } from '@credo-ts/webvh'
 
 // Stand in for the application's own web server, which serves https://issuer.example.com/.well-known/
@@ -75,7 +75,7 @@ const requirement = await controller.modules.webvh.getWitnessRequirement(did)
 // start-section-4
 // On the witness agent. Your own copies of the published log and approvals of the DID, empty before its first entry.
 let publishedLog: WebVhDidLog = []
-let publishedWitnessProofs: WebVhWitnessSigningOptions['witnessProofs'] = []
+let publishedWitnessProofs: WebVhWitnessProofFile = []
 
 const approval = await witness.modules.webvh.signWitnessProof({
   trustedLog: publishedLog,
